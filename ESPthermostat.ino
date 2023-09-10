@@ -161,7 +161,7 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties 
     float t = atof(payload);
     if (t > 0.001) {
       setpoint = t;
-//      Serial.printf ("mqtt: got setpoint %2.2f\n",setpoint);
+      Serial.printf ("mqtt: got setpoint %2.2f\n",setpoint);
     }
   } else if (!strcmp(topic,MQTT_HYSTERESIS)) {
     hysteresis = atof(payload);
@@ -477,8 +477,8 @@ void loop() {
   }
 
   /* Update Card Values */
-  temperature.update((currentTemp));
-  tempSet.update((int) (setpoint));
+  temperature.update(currentTemp);
+  tempSet.update(setpoint);
   tempHyss.update((int) (hysteresis));
   autoMode.update(automaticMode);
   setHyss.update(hysteresis);
