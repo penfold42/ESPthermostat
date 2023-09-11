@@ -193,16 +193,25 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties 
     if (debug) Serial.printf ("mqtt: got mode %d\n",automaticMode);
   } else if (!strcmp(topic,MQTT_STOPTIME)) {
     if (strlen(payload) > 1) {
-      if (debug) Serial.printf ("mqtt: got stopTime %s\n",mqttpayload);
+      if (debug) Serial.printf ("mqtt: got stopTime str %s\n",mqttpayload);
+      long unsigned old_stopTime = stopTime;
       if (mqttpayload[0] == '+') {
         stopTime = timeClient.getEpochTime()+atol(mqttpayload+1);
         automaticMode = true;
       } else {
-        if (stopTime > timeClient.getEpochTime()) {
-          stopTime = atol(mqttpayload);
+        stopTime = atol(mqttpayload);
+/* maybe dont need any of this...
+        if (debug) Serial.printf ("mqtt: got stopTime %u\n",stopTime);
+        // only set auto if its an update some time after boot.
+        // let the mqtt stuff decice on bootup
+        if ((stopTime > timeClient.getEpochTime()) && (millis() > 3000) ){
           automaticMode = true;
+        } else {
+          stopTime = 0;
         }
+*/
       }
+      if (old_stopTime != stopTime) updateMqttFlag = true;
     }
   } else {
     Serial.println("Publish received.");
@@ -352,6 +361,7 @@ void setup() {
       stopTime = timeClient.getEpochTime()+ADD;
     }
     automaticMode = true;
+    updateMqttFlag = true;
     if (debug) Serial.printf (" now %d \n", stopTime);
 
   });
@@ -498,6 +508,9 @@ void update_mqtt_settings(){
 
   snprintf (mqttmsg, 127, "%2.2f",hysteresis);
   mqttClient.publish(MQTT_HYSTERESIS, 0, true, mqttmsg);
+
+  snprintf (mqttmsg, 127, "%u",stopTime);
+  mqttClient.publish(MQTT_STOPTIME, 0, true, mqttmsg);
 }
 
 void readTemp() {
@@ -534,7 +547,7 @@ void loop() {
       info_mode=(info_mode+1) % MAX_INFO_MODE;
 
       timeClient.update();
-      if (debug) Serial.println(timeClient.getFormattedTime());
+//      if (debug) Serial.println(timeClient.getFormattedTime());
     }
   }
 
