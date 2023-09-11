@@ -1,6 +1,6 @@
 // started with https://iotprojectsideas.com/temperature-control-with-esp8266-asyncwebserver/
 
-// todo: MQTT control
+// todo:
 // timer ?
 // persist settings
 
@@ -36,8 +36,8 @@
 #define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
+bool debug = true;
 //#define AP_Mode
-
 #ifdef AP_Mode
 /* Your SoftAP WiFi Credentials */
 const char* ssid = "TempratureController"; // SSID
@@ -84,6 +84,9 @@ bool heaterbtn = 0;
 // counter to cycle info top row of oled
 int info_mode;
 bool flipper;   // flipper for flashing border
+
+volatile bool _300msFlag;
+volatile bool updateMqttFlag;
 
 /* Start Webserver */
 AsyncWebServer server(80);
@@ -144,8 +147,8 @@ void onMqttConnect(bool sessionPresent) {
   Serial.println(sessionPresent);
 //  uint16_t packetIdSub = mqttClient.subscribe("thermo/setpoint", 2);
   mqttClient.subscribe(MQTT_SETPOINT, 2);
-   mqttClient.subscribe(MQTT_HYSTERESIS, 2);
-   mqttClient.subscribe(MQTT_MODE, 2);
+  mqttClient.subscribe(MQTT_HYSTERESIS, 2);
+  mqttClient.subscribe(MQTT_MODE, 2);
 }
 
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
@@ -161,14 +164,14 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties 
     float t = atof(payload);
     if (t > 0.001) {
       setpoint = t;
-      Serial.printf ("mqtt: got setpoint %2.2f\n",setpoint);
+      if (debug) Serial.printf ("mqtt: got setpoint %2.2f\n",setpoint);
     }
   } else if (!strcmp(topic,MQTT_HYSTERESIS)) {
     hysteresis = atof(payload);
-    Serial.printf ("mqtt: got hysteresis %2.2f\n",hysteresis);
+    if (debug) Serial.printf ("mqtt: got hysteresis %2.2f\n",hysteresis);
   } else if (!strcmp(topic,MQTT_MODE)) {
     automaticMode = atoi(payload);
-    Serial.printf ("mqtt: got mode %d\n",automaticMode);
+    if (debug) Serial.printf ("mqtt: got mode %d\n",automaticMode);
   } else {
     Serial.println("Publish received.");
     Serial.print("  topic: ");
@@ -280,20 +283,23 @@ void setup() {
 
   autoMode.attachCallback([&](int value) {
     automaticMode = value;
-    autoMode.update(value);
-    dashboard.sendUpdates();
+//    autoMode.update(value);
+//    dashboard.sendUpdates();
+    updateMqttFlag = 1;
   });
 
   setTemp.attachCallback([&](int value) {
     setpoint = value;
-    setTemp.update(value);
-    dashboard.sendUpdates();
+//    setTemp.update(value);
+//    dashboard.sendUpdates();
+    updateMqttFlag = 1;
   });
 
   setHyss.attachCallback([&](int value) {
     hysteresis = value;
-    setHyss.update(value);
-    dashboard.sendUpdates();
+//    setHyss.update(value);
+//    dashboard.sendUpdates();
+    updateMqttFlag = 1;
   });
 
   Heater.attachCallback([&](int value) {
@@ -305,16 +311,15 @@ void setup() {
         disable_heater();
       }
     }
-    Heater.update(value);
-    dashboard.sendUpdates();
+//    Heater.update(value);
+//    dashboard.sendUpdates();
   });
 
   oledmqttTimer.attach_ms(300,setOledFlag);
 }
 
-volatile bool updateOledFlag;
 void setOledFlag(){
-  updateOledFlag=true;
+  _300msFlag=true;
 }
 
 void moveCursor(int xdiff, int ydiff) {
@@ -327,13 +332,15 @@ void moveCursor(int xdiff, int ydiff) {
 
 #define MAX_INFO_MODE 4
 void update_oled() {
+
+  long zero=millis();
+
   IPAddress me;
   #ifdef AP_Mode
     me = WiFi.softAPIP();
   #else
     me =  WiFi.localIP();
   #endif
-
 
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
@@ -421,31 +428,39 @@ void update_oled() {
       }
       break;
   }
+  long render=millis();
 
   display.display();
+
+  long paint=millis();
 
   if (heaterOn) {
     display.invertDisplay(true);
   } else {
     display.invertDisplay(false);
   }
+  Serial.printf ("render %d, paint %d\n",render-zero, paint-render);
 }
 
-void update_mqtt(){
+void update_mqtt_log(){
   static char mqttmsg[128];
   snprintf (mqttmsg, 127, "%s,%d,%2.2f,%2.2f,%2.2f,%d,%d"
         , WiFi.macAddress().c_str(),millis(),currentTemp, setpoint
         , hysteresis, heaterOn, automaticMode);
   mqttClient.publish("thermo/data", 0, true, mqttmsg);
+}
+
+void update_mqtt_settings(){
+  static char mqttmsg[128];
 
   snprintf (mqttmsg, 127, "%d",automaticMode);
-  mqttClient.publish("thermo/mode", 0, true, mqttmsg);
+  mqttClient.publish(MQTT_MODE, 0, true, mqttmsg);
 
-  snprintf (mqttmsg, 127, "%f",setpoint);
-  mqttClient.publish("thermo/setpoint", 0, true, mqttmsg);
+  snprintf (mqttmsg, 127, "%2.2f",setpoint);
+  mqttClient.publish(MQTT_SETPOINT, 0, true, mqttmsg);
 
-  snprintf (mqttmsg, 127, "%f",hysteresis);
-  mqttClient.publish("thermo/hysteresis", 0, true, mqttmsg);
+  snprintf (mqttmsg, 127, "%2.2f",hysteresis);
+  mqttClient.publish(MQTT_HYSTERESIS, 0, true, mqttmsg);
 }
 
 void readTemp() {
@@ -453,7 +468,7 @@ void readTemp() {
   conversionRunning = false;
 }
 
-int mqtt_counter=0;
+int _300ms_counter=0;
 void loop() {
 
   if (!conversionRunning) {
@@ -461,38 +476,44 @@ void loop() {
     sensors.setWaitForConversion(false);
     sensors.requestTemperatures();
     sensors.setWaitForConversion(true);
-    dallasReady.once_ms(750 / (1 << (12 - sensors.getResolution() )) ,readTemp);
+    dallasReady.once_ms(750 / (1 << (12 - sensors.getResolution() )) , readTemp);
   }
- 
-  // called every 300ms
-  if (updateOledFlag==true) {
-    updateOledFlag=false;
+
+  // flag set every 300ms from ticker
+  if (_300msFlag==true) {
+    _300msFlag=false;
     update_oled();
-    if (++mqtt_counter > 10) {
-      mqtt_counter = 0;
-      update_mqtt();
+    dashboard.sendUpdates();
+
+    // every 3000 ms
+    if (++_300ms_counter > 10) {
+      _300ms_counter = 0;
+      // log data ever 3 secs
+      update_mqtt_log();
       // ~3secs is also a good time to change the status line on oled
       info_mode=(info_mode+1) % MAX_INFO_MODE;
     }
   }
 
-  /* Update Card Values */
-  temperature.update(currentTemp);
-  tempSet.update(setpoint);
-  tempHyss.update((int) (hysteresis));
-  autoMode.update(automaticMode);
-  setHyss.update(hysteresis);
-  setTemp.update(setpoint);
+  if (updateMqttFlag==true) {
+    updateMqttFlag=false;
+    update_mqtt_settings();
+  }
 
   // If in automatic mode, control the heating and cooling relays based on the setpoint and hysteresis
   if (automaticMode == 1) {
     ModeStatus.update("Enabled", "success");
-    if (currentTemp > setpoint + hysteresis/2) {
+    if (currentTemp > -55) {
+      if (currentTemp > setpoint + hysteresis/2) {
+        disable_heater();
+      } else if (currentTemp < setpoint - hysteresis/2) {
+        enable_heater();
+      }
+    } else {
       disable_heater();
-    } else if (currentTemp < setpoint - hysteresis/2) {
-      enable_heater();
     }
   }
+
   else if (automaticMode == 0) {
     ModeStatus.update("Disabled", "danger");
     if (heaterbtn == 1) {
@@ -502,9 +523,16 @@ void loop() {
       disable_heater();
     }
   }
+  /* Update Card Values */
+  temperature.update(currentTemp);
+  tempSet.update(setpoint);
+  tempHyss.update(hysteresis);
+  autoMode.update(automaticMode);
+  setHyss.update(hysteresis);
+  setTemp.update(setpoint);
 
   /* Send Updates to our Dashboard (realtime) */
-  dashboard.sendUpdates();
+//  dashboard.sendUpdates();
 
   delay(100);
 }
