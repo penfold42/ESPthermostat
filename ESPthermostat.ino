@@ -59,6 +59,8 @@ float hysteresis = 1;
 volatile float currentTemp = 1.0;
 bool heaterOn;
 
+unsigned long	stopTime=0;
+
 // Pin numbers for the heating and cooling relays
 #define HEATING_PIN 14 //D5 of esp8266
 //const int COOLING_PIN = 12; //D6 of esp8266
@@ -113,6 +115,7 @@ Card ModeStatus(&dashboard, STATUS_CARD, "Auto Mode Status");
 Card Heater(&dashboard, BUTTON_CARD, "Heater");
 Card TimeNow(&dashboard, GENERIC_CARD, "Time Now");
 Card TimeStop(&dashboard, GENERIC_CARD, "Time Stop");
+Card TimeAdd(&dashboard, BUTTON_CARD, "Timer+30m");
 
 void enable_heater() {
       digitalWrite(HEATING_PIN, HIGH);
@@ -290,24 +293,21 @@ void setup() {
   /* Start AsyncWebServer */
   server.begin();
 
+// timezone is in seconds
+  timeClient.setTimeOffset(10*60*60);
+
   autoMode.attachCallback([&](int value) {
     automaticMode = value;
-//    autoMode.update(value);
-//    dashboard.sendUpdates();
     updateMqttFlag = 1;
   });
 
   setTemp.attachCallback([&](int value) {
     setpoint = value;
-//    setTemp.update(value);
-//    dashboard.sendUpdates();
     updateMqttFlag = 1;
   });
 
   setHyss.attachCallback([&](int value) {
     hysteresis = value;
-//    setHyss.update(value);
-//    dashboard.sendUpdates();
     updateMqttFlag = 1;
   });
 
@@ -320,8 +320,19 @@ void setup() {
         disable_heater();
       }
     }
-//    Heater.update(value);
-//    dashboard.sendUpdates();
+  });
+
+  TimeAdd.attachCallback([&](int value) {
+    #define ADD 10
+//    #define ADD 30*60
+    if (debug) Serial.printf ("stop was %d ", stopTime);
+    if (stopTime) {
+      stopTime += ADD;
+    } else {
+      stopTime = timeClient.getEpochTime()+ADD;
+    }
+    if (debug) Serial.printf (" now %d \n", stopTime);
+
   });
 
   oledmqttTimer.attach_ms(300,setOledFlag);
@@ -473,6 +484,8 @@ void readTemp() {
   conversionRunning = false;
 }
 
+// LOOP   LOOP   LOOP   LOOP   LOOP   LOOP
+
 int _300ms_counter=0;
 void loop() {
 
@@ -501,7 +514,6 @@ void loop() {
 
       timeClient.update();
       if (debug) Serial.println(timeClient.getFormattedTime());
-      
     }
   }
 
@@ -521,6 +533,11 @@ void loop() {
       }
     } else {
       disable_heater();
+    }
+    if ((stopTime > 0) && (timeClient.getEpochTime() > stopTime)) {
+      automaticMode = false;
+      disable_heater();
+      stopTime = 0;
     }
   }
 
@@ -542,7 +559,15 @@ void loop() {
   autoMode.update(automaticMode);
   Heater.update(heaterbtn);
   TimeNow.update(timeClient.getFormattedTime());
-  TimeStop.update("TBC");
+  if (stopTime > 0) {
+    if (timeClient.getEpochTime()>stopTime) {
+      TimeStop.update("passed");
+    } else {
+      TimeStop.update((int)(stopTime-timeClient.getEpochTime()));
+    }
+  } else {
+      TimeStop.update("idle");
+  }
 
   /* Send Updates to our Dashboard (realtime) */
 //  dashboard.sendUpdates();
