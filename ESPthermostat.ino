@@ -5,6 +5,7 @@
 // persist settings
 
 #include <Arduino.h>
+
 #if defined(ESP8266)
 /* ESP8266 Dependencies */
 #include <ESP8266WiFi.h>
@@ -18,7 +19,8 @@
 #include <Ticker.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncMqttClient.h>
-
+#include <WiFiUdp.h>
+#include <NTPClient.h>
 #include <ESPDash.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -68,6 +70,10 @@ DallasTemperature sensors(&oneWire);
 DeviceAddress addrThermometer;
 Ticker dallasReady;
 bool conversionRunning = false;
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
+
 AsyncMqttClient mqttClient;
 Ticker mqttReconnectTimer;
 
@@ -105,6 +111,8 @@ Card setHyss(&dashboard, SLIDER_CARD, "Hysteresis Range", "", 0, 5);
 Card autoMode(&dashboard, BUTTON_CARD, "Auto Mode");
 Card ModeStatus(&dashboard, STATUS_CARD, "Auto Mode Status");
 Card Heater(&dashboard, BUTTON_CARD, "Heater");
+Card TimeNow(&dashboard, GENERIC_CARD, "Time Now");
+Card TimeStop(&dashboard, GENERIC_CARD, "Time Stop");
 
 void enable_heater() {
       digitalWrite(HEATING_PIN, HIGH);
@@ -129,6 +137,7 @@ void connectToMqtt() {
 void onWifiConnect(const WiFiEventStationModeGotIP& event) {
   Serial.println(F("Connected to Wi-Fi."));
   connectToMqtt();
+  timeClient.begin();
 }
 
 void onWifiDisconnect(const WiFiEventStationModeDisconnected& event) {
@@ -428,18 +437,14 @@ void update_oled() {
       }
       break;
   }
-  long render=millis();
 
   display.display();
-
-  long paint=millis();
 
   if (heaterOn) {
     display.invertDisplay(true);
   } else {
     display.invertDisplay(false);
   }
-  Serial.printf ("render %d, paint %d\n",render-zero, paint-render);
 }
 
 void update_mqtt_log(){
@@ -490,8 +495,13 @@ void loop() {
       _300ms_counter = 0;
       // log data ever 3 secs
       update_mqtt_log();
+
       // ~3secs is also a good time to change the status line on oled
       info_mode=(info_mode+1) % MAX_INFO_MODE;
+
+      timeClient.update();
+      if (debug) Serial.println(timeClient.getFormattedTime());
+      
     }
   }
 
@@ -527,9 +537,12 @@ void loop() {
   temperature.update(currentTemp);
   tempSet.update(setpoint);
   tempHyss.update(hysteresis);
-  autoMode.update(automaticMode);
   setHyss.update(hysteresis);
   setTemp.update(setpoint);
+  autoMode.update(automaticMode);
+  Heater.update(heaterbtn);
+  TimeNow.update(timeClient.getFormattedTime());
+  TimeStop.update("TBC");
 
   /* Send Updates to our Dashboard (realtime) */
 //  dashboard.sendUpdates();
