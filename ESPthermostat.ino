@@ -461,6 +461,23 @@ void update_oled() {
   display.setTextSize(2); // Draw 1X-scale text
   switch (info_mode) {
     case 0:
+      if (stopTime > timeClient.getEpochTime()) {
+        unsigned long t = stopTime-timeClient.getEpochTime();
+        unsigned int t_days = (t / 86400L);
+        unsigned int t_hours =(t % 86400L) / 3600;
+        unsigned int t_mins = (t % 3600) / 60;
+        unsigned int t_secs = t % 60;
+        char t_str[24];
+        if (t_days == 0) {
+          snprintf (t_str, 23, " %2d:%02d:%02d", t_hours, t_mins, t_secs);
+        } else {
+          snprintf (t_str, 23, "%3dd %02d:%02d", t_days, t_hours, t_mins);
+        }
+        display.setCursor(4, 47);
+        display.printf("%s", t_str);
+        break;
+      }
+      // no break, fall thru to case 2
     case 2:
       display.setCursor(4, 47);
       display.printf("%s", automaticMode ? "Auto" : "Man.");
