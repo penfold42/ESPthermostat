@@ -152,6 +152,7 @@ void onWifiDisconnect(const WiFiEventStationModeDisconnected& event) {
 char MQTT_SETPOINT[] = "thermo/setpoint";
 char MQTT_HYSTERESIS[] = "thermo/hysteresis";
 char MQTT_MODE[] = "thermo/mode";
+char MQTT_STOPTIME[] = "thermo/stoptime";
 
 void onMqttConnect(bool sessionPresent) {
   Serial.println(F("Connected to MQTT."));
@@ -161,6 +162,7 @@ void onMqttConnect(bool sessionPresent) {
   mqttClient.subscribe(MQTT_SETPOINT, 2);
   mqttClient.subscribe(MQTT_HYSTERESIS, 2);
   mqttClient.subscribe(MQTT_MODE, 2);
+  mqttClient.subscribe(MQTT_STOPTIME, 2);
 }
 
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
@@ -170,20 +172,38 @@ void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
     mqttReconnectTimer.once(10, connectToMqtt);
   }
 }
-
+#define MPL 32
+char mqttpayload[MPL];
 void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
+  if (len >= MPL) return;
+  memcpy(mqttpayload, payload, MPL);
+  mqttpayload[len]=0;
+
   if (!strcmp(topic,MQTT_SETPOINT)) {
-    float t = atof(payload);
+    float t = atof(mqttpayload);
     if (t > 0.001) {
       setpoint = t;
       if (debug) Serial.printf ("mqtt: got setpoint %2.2f\n",setpoint);
     }
   } else if (!strcmp(topic,MQTT_HYSTERESIS)) {
-    hysteresis = atof(payload);
+    hysteresis = atof(mqttpayload);
     if (debug) Serial.printf ("mqtt: got hysteresis %2.2f\n",hysteresis);
   } else if (!strcmp(topic,MQTT_MODE)) {
-    automaticMode = atoi(payload);
+    automaticMode = atoi(mqttpayload);
     if (debug) Serial.printf ("mqtt: got mode %d\n",automaticMode);
+  } else if (!strcmp(topic,MQTT_STOPTIME)) {
+    if (strlen(payload) > 1) {
+      if (debug) Serial.printf ("mqtt: got stopTime %s\n",mqttpayload);
+      if (mqttpayload[0] == '+') {
+        stopTime = timeClient.getEpochTime()+atol(mqttpayload+1);
+        automaticMode = true;
+      } else {
+        if (stopTime > timeClient.getEpochTime()) {
+          stopTime = atol(mqttpayload);
+          automaticMode = true;
+        }
+      }
+    }
   } else {
     Serial.println("Publish received.");
     Serial.print("  topic: ");
@@ -331,6 +351,7 @@ void setup() {
     } else {
       stopTime = timeClient.getEpochTime()+ADD;
     }
+    automaticMode = true;
     if (debug) Serial.printf (" now %d \n", stopTime);
 
   });
@@ -559,18 +580,23 @@ void loop() {
   autoMode.update(automaticMode);
   Heater.update(heaterbtn);
   TimeNow.update(timeClient.getFormattedTime());
+
   if (stopTime > 0) {
     if (timeClient.getEpochTime()>stopTime) {
       TimeStop.update("passed");
     } else {
-      TimeStop.update((int)(stopTime-timeClient.getEpochTime()));
+      unsigned long t = stopTime-timeClient.getEpochTime();
+      unsigned int t_days = (t / 86400L);
+      unsigned int t_hours =(t % 86400L) / 3600;
+      unsigned int t_mins = (t % 3600) / 60;
+      unsigned int t_secs = t % 60;
+      char t_str[24];
+      snprintf (t_str, 23, "%d days, %2d:%02d:%02d", t_days, t_hours, t_mins, t_secs);
+      TimeStop.update(t_str);
     }
   } else {
       TimeStop.update("idle");
   }
-
-  /* Send Updates to our Dashboard (realtime) */
-//  dashboard.sendUpdates();
 
   delay(100);
 }
