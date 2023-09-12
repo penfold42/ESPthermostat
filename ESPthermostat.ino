@@ -1,7 +1,6 @@
 // started with https://iotprojectsideas.com/temperature-control-with-esp8266-asyncwebserver/
 
 // todo:
-// timer ?
 // persist settings
 
 #include <Arduino.h>
@@ -51,6 +50,11 @@ const char* password = PASS; // Password
 
 #define MQTT_HOST IPAddress(10,0,0,3)
 #define MQTT_PORT 1883
+#define MQTT_SETPOINT_fmt "%s/thermo/setpoint"
+#define MQTT_HYSTERESIS_fmt "%s/thermo/hysteresis"
+#define MQTT_MODE_fmt "%s/thermo/mode"
+#define MQTT_STOPTIME_fmt "%s/thermo/stoptime"
+#define MQTT_DATA_fmt "%s/thermo/data"
 
 // Setpoint and hysteresis values (in degrees Celsius)
 float setpoint = 27;
@@ -83,17 +87,20 @@ WiFiEventHandler wifiConnectHandler;
 WiFiEventHandler wifiDisconnectHandler;
 Ticker wifiReconnectTimer;
 
-Ticker oledmqttTimer;
+Ticker _300msTimer;
 
 // Control mode (automatic or manual)
 bool automaticMode = 1;
+// manual heater "on"
 bool heaterbtn = 0;
 
-// counter to cycle info top row of oled
+// counter to cycle info rows of oled
 int info_mode;
-bool flipper;   // flipper for flashing border
 
+// every 300ms timer
 volatile bool _300msFlag;
+
+// something has changed, request republish of mqtt
 volatile bool updateMqttFlag;
 
 /* Start Webserver */
@@ -149,16 +156,17 @@ void onWifiDisconnect(const WiFiEventStationModeDisconnected& event) {
   wifiReconnectTimer.once(2, connectToWifi);
 }
 
-char MQTT_SETPOINT[] = "thermo/setpoint";
-char MQTT_HYSTERESIS[] = "thermo/hysteresis";
-char MQTT_MODE[] = "thermo/mode";
-char MQTT_STOPTIME[] = "thermo/stoptime";
+char MQTT_SETPOINT[64];
+char MQTT_HYSTERESIS[64];
+char MQTT_MODE[64];
+char MQTT_STOPTIME[64];
+char MQTT_DATA[64];
 
 void onMqttConnect(bool sessionPresent) {
   Serial.println(F("Connected to MQTT."));
   Serial.print(F("Session present: "));
   Serial.println(sessionPresent);
-//  uint16_t packetIdSub = mqttClient.subscribe("thermo/setpoint", 2);
+
   mqttClient.subscribe(MQTT_SETPOINT, 2);
   mqttClient.subscribe(MQTT_HYSTERESIS, 2);
   mqttClient.subscribe(MQTT_MODE, 2);
@@ -262,6 +270,12 @@ void setup() {
   }
   Serial.println();
 
+  snprintf(MQTT_SETPOINT, 63, MQTT_SETPOINT_fmt, WiFi.hostname().c_str() );
+  snprintf(MQTT_HYSTERESIS, 63, MQTT_HYSTERESIS_fmt, WiFi.hostname().c_str() );
+  snprintf(MQTT_MODE, 63, MQTT_MODE_fmt, WiFi.hostname().c_str() );
+  snprintf(MQTT_STOPTIME, 63, MQTT_STOPTIME_fmt, WiFi.hostname().c_str() );
+  snprintf(MQTT_DATA, 63, MQTT_DATA_fmt, WiFi.hostname().c_str() );
+
   wifiConnectHandler = WiFi.onStationModeGotIP(onWifiConnect);
   wifiDisconnectHandler = WiFi.onStationModeDisconnected(onWifiDisconnect);
   mqttClient.onConnect(onMqttConnect);
@@ -278,19 +292,20 @@ void setup() {
   Serial.println(WiFi.softAPIP());
 #else
   display.setCursor(4, 4);
+  display.println(WiFi.hostname());
   display.println(F("Connecting to AP:"));
-  display.setCursor(4, 13);
+  moveCursor(0,9);
   display.println(ssid);
   display.drawRect(0,0,128,64,SSD1306_WHITE);
   display.display();
 
-
+  Serial.println(WiFi.hostname());
   Serial.print(F("Connecting to "));
   Serial.println(ssid);
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
-  display.setCursor(4, 22);
+  moveCursor(0,9);
   int retries = 20;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -366,11 +381,10 @@ void setup() {
 
   });
 
-  oledmqttTimer.attach_ms(300,setOledFlag);
-}
+  _300msTimer.attach_ms(300,[](){
+    _300msFlag=true;
+  });
 
-void setOledFlag(){
-  _300msFlag=true;
 }
 
 void moveCursor(int xdiff, int ydiff) {
@@ -447,6 +461,7 @@ void update_oled() {
 // digits right of decimal point
   moveCursor(8,0); display.printf("%02d", t_frac);
 
+  static bool flipper;
   flipper = !flipper;
   if (flipper) {
     display.drawRect(display.getCursorX()+2, display.getCursorY(), 5, 5, WHITE);     // put degree symbol ( ° )
@@ -469,7 +484,7 @@ void update_oled() {
         unsigned int t_secs = t % 60;
         char t_str[24];
         if (t_days == 0) {
-          snprintf (t_str, 23, " %2d:%02d:%02d", t_hours, t_mins, t_secs);
+          snprintf (t_str, 23, " %02d:%02d:%02d", t_hours, t_mins, t_secs);
         } else {
           snprintf (t_str, 23, "%3dd %02d:%02d", t_days, t_hours, t_mins);
         }
@@ -477,7 +492,7 @@ void update_oled() {
         display.printf("%s", t_str);
         break;
       }
-      // no break, fall thru to case 2
+      // !!! no break, fall thru to case 2 if timer stopped
     case 2:
       display.setCursor(4, 47);
       display.printf("%s", automaticMode ? "Auto" : "Man.");
@@ -511,7 +526,7 @@ void update_mqtt_log(){
   snprintf (mqttmsg, 127, "%s,%d,%2.2f,%2.2f,%2.2f,%d,%d"
         , WiFi.macAddress().c_str(),millis(),currentTemp, setpoint
         , hysteresis, heaterOn, automaticMode);
-  mqttClient.publish("thermo/data", 0, true, mqttmsg);
+  mqttClient.publish(MQTT_DATA, 0, true, mqttmsg);
 }
 
 void update_mqtt_settings(){
@@ -537,7 +552,6 @@ void readTemp() {
 
 // LOOP   LOOP   LOOP   LOOP   LOOP   LOOP
 
-int _300ms_counter=0;
 void loop() {
 
   if (!conversionRunning) {
@@ -555,6 +569,7 @@ void loop() {
     dashboard.sendUpdates();
 
     // every 3000 ms
+    static int _300ms_counter=0;
     if (++_300ms_counter > 10) {
       _300ms_counter = 0;
       // log data ever 3 secs
@@ -573,7 +588,7 @@ void loop() {
     update_mqtt_settings();
   }
 
-  // If in automatic mode, control the heating and cooling relays based on the setpoint and hysteresis
+  // If in automatic mode, control the heating relays based on the setpoint and hysteresis
   if (automaticMode == 1) {
     ModeStatus.update("Enabled", "success");
     if (currentTemp > -55) {
@@ -630,4 +645,3 @@ void loop() {
 
   delay(100);
 }
-
