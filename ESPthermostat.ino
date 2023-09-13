@@ -563,18 +563,18 @@ void readTemp() {
   conversionRunning = false;
 }
 
-// LOOP   LOOP   LOOP   LOOP   LOOP   LOOP
-
-void loop() {
-
+void startTempConversion() {
   if (!conversionRunning) {
     conversionRunning = true;
     sensors.setWaitForConversion(false);
     sensors.requestTemperatures();
     sensors.setWaitForConversion(true);
-    dallasReady.once_ms(750 / (1 << (12 - sensors.getResolution() )) , readTemp);
+    int convWait = 750 / (1 << (12 - sensors.getResolution() ) );
+    dallasReady.once_ms( convWait , readTemp);
   }
+}
 
+void every300ms() {
   // flag set every 300ms from ticker
   if (_300msFlag==true) {
     _300msFlag=false;
@@ -591,16 +591,13 @@ void loop() {
       // ~3secs is also a good time to change the status line on oled
       info_mode=(info_mode+1) % MAX_INFO_MODE;
 
+      // timeClient will only do this every 60secs anyway
       timeClient.update();
-//      if (debug) Serial.println(timeClient.getFormattedTime());
     }
   }
+}
 
-  if (updateMqttFlag==true) {
-    updateMqttFlag=false;
-    update_mqtt_settings();
-  }
-
+void thermo_timer_logic() {
   // If in automatic mode, control the heating relays based on the setpoint and hysteresis
   if (automaticMode == 1) {
     ModeStatus.update("Enabled", "success");
@@ -613,6 +610,7 @@ void loop() {
     } else {
       disable_heater();
     }
+
     if ((stopTime > 0) && (timeClient.getEpochTime() > stopTime)) {
       automaticMode = false;
       disable_heater();
@@ -621,23 +619,23 @@ void loop() {
     }
   }
 
+// apply the manual control button if not in auto mode
   else if (automaticMode == 0) {
     ModeStatus.update("Disabled", "danger");
     if (heaterbtn == 1) {
     	enable_heater();
-    }
-    else {
+    } else {
       disable_heater();
     }
   }
+}
+
+void updateCards() {
   /* Update Card Values */
   temperature.update(currentTemp);
-  tempSet.update(setpoint);
-  tempHyss.update(hysteresis);
-  setHyss.update(hysteresis);
-  setTemp.update(setpoint);
-  autoMode.update(automaticMode);
-  Heater.update(heaterbtn);
+  tempSet.update(setpoint);       tempHyss.update(hysteresis);
+  setTemp.update(setpoint);       setHyss.update(hysteresis);
+  autoMode.update(automaticMode); Heater.update(heaterbtn);
   TimeNow.update(timeClient.getFormattedTime());
 
   if (stopTime > 0) {
@@ -656,6 +654,25 @@ void loop() {
   } else {
       TimeStop.update("idle");
   }
+}
+
+
+// LOOP   LOOP   LOOP   LOOP   LOOP   LOOP
+
+void loop() {
+
+  startTempConversion();
+
+  every300ms();
+
+  thermo_timer_logic();
+
+  if (updateMqttFlag==true) {
+    updateMqttFlag=false;
+    update_mqtt_settings();
+  }
+
+  updateCards();
 
   delay(100);
 }
