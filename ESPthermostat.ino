@@ -291,12 +291,26 @@ void setup() {
   Serial.print("IP Address: ");
   Serial.println(WiFi.softAPIP());
 #else
-  display.setCursor(4, 4);
-  display.println(WiFi.hostname());
-  display.println(F("Connecting to AP:"));
-  moveCursor(0,9);
-  display.println(ssid);
   display.drawRect(0,0,128,64,SSD1306_WHITE);
+
+  int Y=4; display.setCursor(4, Y);
+  if (WiFi.hostname().length() <= 10) {
+    display.setTextSize(2);
+  }
+  display.print(WiFi.hostname());
+
+  display.setTextSize(1);
+  Y+=22; display.setCursor(4, Y);
+  display.print(F("Connecting to AP:"));
+
+  Y+=9; display.setCursor(4, Y);
+  if (strlen(ssid) <= 10) {
+    display.setTextSize(2);
+  }
+  display.print(ssid);
+  display.setTextSize(1);
+
+  Y+=18; display.setCursor(4, Y);
   display.display();
 
   Serial.println(WiFi.hostname());
@@ -305,7 +319,6 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
-  moveCursor(0,9);
   int retries = 20;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -604,6 +617,7 @@ void loop() {
       automaticMode = false;
       disable_heater();
       stopTime = 0;
+      update_mqtt_settings();
     }
   }
 
